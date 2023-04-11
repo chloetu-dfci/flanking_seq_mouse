@@ -1,0 +1,638 @@
+---
+title: "Formatting_neoantigen_data"
+output: html_document
+date: "2022-11-28"
+---
+
+# Libraries
+```{r setup, include=FALSE}
+library(ggvenn)
+library(tximport)
+library(GenomicFeatures)
+library(dplyr)
+library(stringr)
+library(ggrepel)
+#library(OrganismDbi)
+```
+
+# Directory
+```{r}
+dir <- "~/Desktop/mouse_epitope_extraction"
+```
+
+###### Load salmon data
+# Salmon produces transcript level abundance estimates. 
+# This code summarizes transcript level estimates to the gene level
+```{r}
+salmon_data <- read.table(file.path(dir, "Lucas_Pomerance_MC38_Transcript_Quantitation_With_Salmon_quant.txt"), header = TRUE)
+salmon_data <- salmon_data %>%
+  arrange(desc(TPM))
+# 
+# 
+# # Summarize salmon transcript level information to the gene level
+# TxDb <- makeTxDbFromGFF(file =file.path(dir,"Mus_musculus.GRCm38.102.gtf"))
+# k <- keys(TxDb, keytype = "TXNAME")
+# tx2gene <- select(TxDb, k, "GENEID", "TXNAME")
+# head(tx2gene)
+# 
+# rm_version<-str_extract(salmon_data$Name,".*(?=\\.)")
+# salmon_data$Name<-rm_version
+# 
+# txi <- tximport(file.path(dir, "Lucas_Pomerance_MC38_Transcript_Quantitation_With_Salmon_quant.txt"),
+#                 type = "salmon", tx2gene = tx2gene,ignoreTxVersion = TRUE)
+# 
+# gene_level_tpm <-data.frame(gene_id=rownames(txi$abundance),TPM=txi$abundance,row.names = NULL)
+# 
+# write.table(gene_level_tpm,file.path(dir,"/formatted_data_nov.29/gene_level_tpm.txt"),row.names=FALSE)
+```
+
+##### Load in all predicted neoantigens, filtered neoantigens, and known neoantigens
+```{r}
+full_pipeline_output <- read.csv(file.path(dir, "Lucas_Pomerance_MC38_Epitope_Binding_Predictions_MHCI_H2_DB_H2_KB.all_epitopes.tsv"),sep="\t")
+filtered_pipeline_output <- read.csv(file.path(dir, "Lucas_Pomerance_MC38_Epitope_Binding_Predictions_MHCI_H2_DB_H2_KB.filtered.tsv"),sep="\t")
+known_neoantigens <- read.csv(file.path(dir, "2022-10-19 Known MC38 Neoantigens.csv"))
+known_neoantigens <- known_neoantigens[c(1:13),]
+```
+
+# Format pipeline outputs
+```{r}
+# Extract useful columns from pvactools pipeline
+full_pipeline_output<-full_pipeline_output[,c("Transcript","Ensembl.Gene.ID","Gene.Name","HGVSc","HGVSp","HLA.Allele","Gene.Expression","Transcript.Expression","MT.Epitope.Seq","Median.MT.Score",        "Tumor.DNA.Depth","Tumor.DNA.VAF","Tumor.RNA.Depth","Tumor.RNA.VAF","Transcript.Support.Level")]
+filtered_pipeline_output<-filtered_pipeline_output[,c("Transcript","Ensembl.Gene.ID","Gene.Name","HGVSc","HGVSp","HLA.Allele","Gene.Expression","Transcript.Expression","MT.Epitope.Seq","Median.MT.Score",        "Tumor.DNA.Depth","Tumor.DNA.VAF","Tumor.RNA.Depth","Tumor.RNA.VAF","Transcript.Support.Level")]
+
+# Remove genes with no transcript expression
+filtered_pipeline_output <- filtered_pipeline_output%>%
+  filter(!is.na(Transcript.Expression))
+```
+
+
+
+### Append gene level TPM values (mutated transcripts only) to predicted and filtered neoantigens file
+```{r}
+# # Filtered pipeline has a transcript expression 1 TPM floor, and a 1000 median MT Score ceiling. Bug: it accepts NA's.
+# rm_version<-str_extract(full_pipeline_output$Transcript,".*(?=\\.)")
+# full_pipeline_output$Transcript<-rm_version
+# 
+# # Attach gene level expression to the pvactools output
+# full_pipeline_output<-full_pipeline_output%>%
+#   rename("Ensembl.Gene.ID"="gene_id")%>%
+#   inner_join(mutated_gene_level_tpm,by="gene_id")%>%
+#   mutate(Gene.Expression=TPM,.keep="unused")%>%
+#   rename("gene_id"="Ensembl.Gene.ID")
+# 
+# rm_version<-str_extract(filtered_pipeline_output$Transcript,".*(?=\\.)")
+# filtered_pipeline_output$Transcript<-rm_version
+# 
+# # Attach gene level expression to the filtered ouptput
+# filtered_pipeline_output<-filtered_pipeline_output%>%
+#   rename("Ensembl.Gene.ID"="gene_id")%>%
+#   inner_join(mutated_gene_level_tpm,by="gene_id")%>%
+#   mutate(Gene.Expression=TPM,.keep="unused")%>%
+#   rename("gene_id"="Ensembl.Gene.ID")
+# 
+# 
+# # 135 transcript IDs in full pipeline had NA expression
+# # Dnajc7 is found in filtered output, but it has no RNA expression at all (NA).
+# # Remove, potential bug in pipeline
+# 
+# table(is.na(distinct(full_pipeline_output,Transcript,.keep_all = TRUE)$Transcript.Expression))
+# #full_pipeline_output[is.na(full_pipeline_output$Transcript.Expression),"Transcript.Expression"]<-0
+```
+
+
+# Format full pipeline output
+```{r}
+# A different mutation can be defined as a new protein change. Extract normal and mutant amino acid from each mutation into new columns.
+full_pipeline_output<-full_pipeline_output%>%
+  mutate(Normal.AA=str_extract(HGVSp,"(?<=p.).{3}"),
+         Mutant.AA=str_extract(HGVSp,".{3}$"),.after=HGVSp)
+
+# Filtering metrics for real variants- subset full and Neil's output
+full_pipeline_output <-full_pipeline_output%>%
+  filter(
+    #Median.MT.Score<=500,
+         #Transcript.Expression>=1,
+         Tumor.DNA.Depth>=1,
+         Tumor.DNA.VAF>=0.05,
+         Tumor.RNA.Depth>=1,
+         Tumor.RNA.VAF>=0.01,
+         Transcript.Support.Level<=5|is.na(Transcript.Support.Level))
+
+filtered_pipeline_output <-filtered_pipeline_output%>%
+  filter(Median.MT.Score<=500,
+         #Transcript.Expression>=1,
+         Tumor.DNA.Depth>=1,
+         Tumor.DNA.VAF>=0.05,
+         Tumor.RNA.Depth>=1,
+         Tumor.RNA.VAF>=0.01,
+         Transcript.Support.Level<=5|is.na(Transcript.Support.Level))
+
+# Select best row (based on ic50 rank) for each mutation (defined by normal/variant amino acid) for each gene
+formatted_full_pipeline_output<-full_pipeline_output %>%
+  group_by(Gene.Name,Normal.AA,Mutant.AA)%>%
+  slice_max(n=1,Transcript.Expression)%>%
+  slice_min(n=1,Median.MT.Score)%>%
+  arrange(desc(Transcript.Expression))
+
+
+```
+
+# Check how many genes have different transcripts which share the same mutation
+```{r}
+# Multiple transcripts for same gene- 1. different mutation 2. same mutation
+# Multiple instances of transcript for same gene- 1. different mutation
+
+formatted_full_pipeline_output%>%filter(Transcript.Expression>=1)
+
+
+genes_w_multiple_transcripts_with_same_mutation<-formatted_full_pipeline_output%>%
+  group_by(Gene.Name,Normal.AA,Mutant.AA)%>%
+  count(Gene.Name)
+
+ggplot(genes_w_multiple_transcripts_with_same_mutation)+
+  geom_bar(aes(x=n))+
+  scale_y_log10()+
+  ylab("Number of genes (log 10)")+
+  xlab("Number of transcripts with the same mutation")+
+  ggtitle("Distribution of genes")
+```
+
+
+
+# Summarize mutated transcript level information to the gene level-NOT USED
+```{r}
+# # Extract mutated transcripts
+# mutated_transcripts<-str_extract(formatted_full_pipeline_output$Transcript,".*(?=\\.)")
+# mutated_transcripts<-unique(mutated_transcripts)
+# 
+# salmon_data$Name<-str_extract(salmon_data$Name,".*(?=\\.)")
+# 
+# mutated_salmon<-salmon_data%>%
+#   filter(Name%in%mutated_transcripts)
+# 
+# write.table(mutated_salmon,file.path(dir,"Lucas_Pomerance_MC38_Mutated_Transcripts_Salmon_quant_VAF_Depth_Filtered.txt"),
+#             quote=FALSE,
+#             row.names=FALSE,
+#             sep="\t")
+# 
+# # Summarize salmon transcript level information to the gene level
+# TxDb <- makeTxDbFromGFF(file =file.path(dir,"Mus_musculus.GRCm38.102.gtf"))
+# k <- keys(TxDb, keytype = "TXNAME")
+# tx2gene <- select(TxDb, k, "GENEID", "TXNAME")
+# 
+# mutated_txi <- tximport(file.path(dir, "Lucas_Pomerance_MC38_Mutated_Transcripts_Salmon_quant_VAF_Depth_Filtered.txt"),
+#                 type = "salmon", tx2gene = tx2gene,ignoreTxVersion = TRUE)
+# 
+# mutated_gene_level_tpm <- data.frame(gene_id=rownames(mutated_txi$abundance),TPM=mutated_txi$abundance,row.names = NULL)
+# 
+# write.table(mutated_gene_level_tpm,file.path(dir,"/formatted_data_nov.29/mutated_transcripts_only_gene_level_tpm.txt"),row.names=FALSE)
+# 
+# colnames(mutated_gene_level_tpm)[1]<-"Ensembl.Gene.ID"
+# 
+# # Append gene level TPM to output
+# full_output_gene_TPM<-formatted_full_pipeline_output%>%
+#   dplyr::select(-Gene.Expression)%>%
+#   inner_join(mutated_gene_level_tpm,by="Ensembl.Gene.ID")%>%
+#   relocate(Gene.Expression,.after=HLA.Allele)
+
+```
+
+# Compare transcript TPM and gene TPM
+```{r}
+
+ggpaired(full_output_gene_TPM,
+         Gene.Expression,
+         Transcript.Expression,
+         Transcript.ID)
+```
+
+
+
+
+# Save the formatted filtered and full pvactools pipeline files
+```{r}
+# write.table(formatted_full_pipeline_output, file.path(dir, "/formatted_data_nov.29/Lucas_MC38_top_301_mutated_neoantigens_using_Transcript_Exp_VAF_Depth_Filtered.tsv"), sep = "\t", row.names = FALSE)
+# write.table(formatted_full_pipeline_output, file.path(dir, "/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Full_Formatted_VAF_Depth_Filtered_multiple_mutations_allowed.tsv"), sep = "\t", row.names = FALSE)
+# 
+# write.table(filtered_pipeline_output, file.path(dir, "/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Filtered_Formatted_VAF_Depth_Filtered.tsv"), sep = "\t", row.names = FALSE)
+# 
+# write.table(formatted_full_pipeline_output, file.path(dir, "/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Full_Formatted_VAF_Depth_Filtered.tsv"), sep = "\t", row.names = FALSE)
+```
+
+
+# Read in the FORMATTED filtered and full pvactools pipeline files
+```{r}
+filtered_pipeline_output <- read.csv(file.path(dir, "/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Filtered_Formatted_VAF_Depth_Filtered.tsv"),sep="\t")
+#formatted_full_pipeline_output <- read.csv(file.path(dir,"/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Full_Formatted_VAF_Depth_Filtered.tsv"), sep = "\t")
+
+formatted_full_pipeline_output <- read.csv(file.path(dir,"/formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Full_Formatted_VAF_Depth_Filtered_multiple_mutations_allowed.tsv"), sep = "\t")
+
+known_neoantigens <- read.csv(file.path(dir, "2022-10-19 Known MC38 Neoantigens.csv"))
+known_neoantigens <- known_neoantigens[c(1:13),]
+```
+
+
+# Insert the non-mutated genes into the formatted full pipeline output by gene level TPM (mutated and nonmutated)
+# (TEST: results: considering both mutated and non-mutated genes, we'd need N=13000~ to get all known neoantigens and all of Neil's hits by ranking based on gene level TPM)
+```{r}
+# top_mutated_and_nonmutated_genes_gene_exp <- mutated_and_non_mutated%>%
+#   arrange(desc(Gene.Expression))%>%
+#   dplyr::slice(1:10)
+# 
+# # Are these top X most highly-expressed mutated genes found in Neil's pipeline (Applying his filtering metrics)?
+# table(filtered_pipeline_output$Gene.Name %in% top_mutated_and_nonmutated_genes_gene_exp$Gene.Name)
+# table(known_neoantigens$Gene %in% top_mutated_and_nonmutated_genes_gene_exp$Gene.Name)
+# 
+# 
+# mutated_and_non_mutated
+# # Which genes are not in the neoantigen prediction file?
+# nonmutated_genes<-gene_level_tpm[!(mutated_and_non_mutated$Gene.Name%in%gene_level_tpm$gene_id),]
+# colnames(nonmutated_genes)<-c("Ensembl.Gene.ID","Gene.Expression")
+# test<-bind_rows(mutated_and_non_mutated,nonmutated_genes)
+# test<-test%>%
+#   arrange(desc(Gene.Expression))%>%
+#   dplyr::slice(1:13000)
+# 
+# table(filtered_pipeline_output$Gene.Name %in% test$Gene.Name)
+# table(known_neoantigens$Gene %in% test$Gene.Name)
+```
+
+# Comparing genes from new filtering metrics to predicted and known neoantigens
+```{r}
+# Are these top X most highly-expressed mutated genes found in Neil's pipeline (Applying his filtering metrics)?
+table(filtered_pipeline_output$Gene.Name %in% top_mutated_genes_gene_exp$Gene.Name)
+table(known_neoantigens$Gene %in% top_mutated_genes_gene_exp$Gene.Name)
+```
+
+
+# Find top N expressed mutated genes using (mutated) gene expression
+```{r}
+top_mutated_genes_gene_exp <- formatted_full_pipeline_output
+#%>%
+  # arrange(desc(Gene.Expression))%>%
+  # dplyr::slice(1:1342)
+
+# Are these top X most highly-expressed mutated genes found in Neil's pipeline (Applying his filtering metrics)?
+table(filtered_pipeline_output$Gene.Name %in% top_mutated_genes_gene_exp$Gene.Name)
+table(known_neoantigens$Gene %in% top_mutated_genes_gene_exp$Gene.Name)
+
+# # Look at missing genes
+# known_neoantigens[!(known_neoantigens$Gene %in% top_mutated_genes_gene_exp$Gene.Name),]
+# filtered_pipeline_output[!(filtered_pipeline_output$Gene.Name %in% top_mutated_genes_gene_exp$Gene.Name),]
+```
+
+# Find top N expressed mutated genes using transcript expression
+```{r}
+top_mutated_genes_transcript_exp <- formatted_full_pipeline_output %>%
+  arrange(desc(Transcript.Expression))%>%
+  dplyr::slice(1:1316)
+
+# Are these top 50 most highly-expressed mutated genes found in Neil's pipeline (Applying his filtering metrics)?
+table(filtered_pipeline_output$Gene.Name %in% top_mutated_genes_transcript_exp$Gene.Name)
+table(known_neoantigens$Gene %in% top_mutated_genes_transcript_exp$Gene.Name)
+
+# # Look at missing genes
+# known_neoantigens[!(known_neoantigens$Gene %in% top_mutated_genes_transcript_exp$Gene.Name),]
+# filtered_pipeline_output[!(filtered_pipeline_output$Gene.Name %in% top_mutated_genes_transcript_exp$Gene.Name),]
+```
+
+# TPM distribution of top 1316 mutated genes
+```{r,fig.width=3}
+mutated_genes_tpm<-read.table(file.path(dir, "formatted_data_nov.29/Lucas_MC38_top_1316_mutated_neoantigens_using_Transcript_Exp_VAF_Depth_Filtered.tsv"),header=TRUE)
+
+mutated_genes_tpm$Rank<-as.integer(rownames(mutated_genes_tpm))
+
+ggplot(mutated_genes_tpm, aes(x=Rank, y=Transcript.Expression)) +
+  geom_line()+
+  scale_y_log10()+
+  ggtitle("TPM distribution of top 1316 mutated genes")
+```
+
+# TPM distribution of top 301 mutated genes
+```{r,fig.width=3}
+mutated_genes_tpm<-read.table(file.path(dir, "formatted_data_nov.29/Lucas_MC38_top_301_mutated_neoantigens_using_Transcript_Exp_VAF_Depth_Filtered.tsv"),header=TRUE)
+
+mutated_genes_tpm$Rank<-as.integer(rownames(mutated_genes_tpm))
+
+ggplot(mutated_genes_tpm, aes(x=Rank, y=Transcript.Expression)) +
+  geom_line()+
+  scale_y_log10()+
+  ggtitle("TPM distribution of top 301 mutated genes")
+```
+
+
+# Not Run
+```{r}
+venn_diagram_list<-list(
+  Transcript_level = top_mutated_genes_transcript_exp$Gene.Name,
+  Gene_level = top_mutated_genes_gene_exp$Gene.Name)
+
+# Print venn diagram to express overlap between top expressed mutated genes, the predicted neoantigens, and the known neoantigens
+ggvenn(venn_diagram_list)
+
+#write.table(x=top_50_mutated_genes,file=file.path(dir, "top_50_expressed_mutated_genes.tsv"),sep="\t")
+
+```
+
+# Extract genes that were specifically unmutated in MC38 sample GENE LEVEL TPM
+```{r}
+# gene_level_tpm<-read.table(file.path(dir,"/formatted_data_nov.29/gene_level_tpm.txt"),header = TRUE)
+# 
+# mutated_genes <- formatted_full_pipeline_output$Ensembl.Gene.ID
+# nonmutated_genes_tpm <- gene_level_tpm[!(gene_level_tpm$gene_id %in% mutated_genes),]
+# 
+# # Find top 1000 expressed non-mutated genes
+# nonmutated_genes_tpm <- nonmutated_genes_tpm %>%
+#   arrange(desc(TPM)) %>%
+#   dplyr::slice(1:1000)
+# 
+# #write.table(x=nonmutated_genes_tpm,file=file.path(dir, "formatted_data_nov.29/top_1000_expressed_nonmutated_genes_VAF_Depth_Filtered.tsv"),sep="\t",row.names = FALSE)
+```
+
+# Extract genes that were specifically unmutated in MC38 sample TRANSCRIPT LEVEL TPM
+```{r}
+transcript_tpm<-read.table(file.path(dir,"/Lucas_Pomerance_MC38_Transcript_Quantitation_With_Salmon_quant.txt"),header = TRUE)
+rm_version<-str_extract(transcript_tpm$Name,".*(?=\\.)")
+transcript_tpm$Name<-rm_version
+
+full_pipeline_output <- read.csv(file.path(dir, "Lucas_Pomerance_MC38_Epitope_Binding_Predictions_MHCI_H2_DB_H2_KB.all_epitopes.tsv"),sep="\t")
+
+# Extract mutated genes
+full_pipeline_output <-full_pipeline_output%>%
+  filter(Tumor.DNA.Depth>=1,
+         Tumor.DNA.VAF>=0.05,
+         Tumor.RNA.Depth>=1,
+         Tumor.RNA.VAF>=0.01,
+         Transcript.Support.Level<=5|is.na(Transcript.Support.Level))
+
+
+# Attach gene name to each transcript ID
+gtf<-rtracklayer::import(file.path(dir,"Mus_musculus.GRCm38.102.gtf"))
+gtf_df=as.data.frame(gtf)
+
+gtf_df<-gtf_df[,c("transcript_id","gene_id","gene_name","gene_biotype","transcript_biotype")]
+
+gtf_df<-gtf_df%>%
+  filter(!is.na(transcript_id),gene_biotype=="protein_coding",transcript_biotype=="protein_coding")%>%
+  distinct()
+
+colnames(gtf_df)<-c("Name","Ensembl.Gene.ID","Gene.Name","Gene.Biotype","Transcript.Biotype")
+
+# Around HALF (out of 116500~) transcripts disappeared- they were not found in transcript-->gene table. Mostly due to me removing anything that's not protein coding.
+transcript_tpm <- inner_join(transcript_tpm,gtf_df,by="Name")
+
+# Remove mutated genes
+mutated_genes <- unique(full_pipeline_output$Gene.Name)
+nonmutated_genes_tpm <- transcript_tpm[!(transcript_tpm$Gene.Name %in% mutated_genes),]
+
+
+# Remove all mitochondrial genes, find the top expressed transcript for each gene, and then find top 1000 genes ranked by transcript expression
+nonmutated_genes_tpm <- nonmutated_genes_tpm %>%
+  filter(!str_detect(Gene.Name,"mt-"))%>%
+  group_by(Ensembl.Gene.ID)%>%
+  arrange(desc(TPM)) %>%
+  dplyr::slice(1)%>%
+  ungroup()%>%
+  arrange(desc(TPM))%>%
+  dplyr::slice(1:1300)
+
+unique(nonmutated_genes_tpm$Gene.Biotype)
+unique(nonmutated_genes_tpm$Transcript.Biotype)
+
+write.table(x=nonmutated_genes_tpm,file=file.path(dir, "formatted_data_nov.29/Top_1300_Expressed_Nonmutated_Genes_VAF_Depth_Filtered_by_Transcript_TPM.tsv"),sep="\t",row.names = FALSE)
+```
+
+
+# Do the same genes appear in non-mutated genes file and mutated genes file?
+```{r}
+nonmutated_genes_tpm<-read.table(file.path(dir, "formatted_data_nov.29/Top_1300_Expressed_Nonmutated_Genes_VAF_Depth_Filtered_by_Transcript_TPM.tsv"),header=TRUE)
+
+mutated_genes_tpm<-read.table(file.path(dir,"formatted_data_nov.29/Lucas_MC38_Epitope_Binding_Predictions_Full_Formatted_VAF_Depth_Filtered_Multiple_Mutations_Allowed.tsv"),header=TRUE)
+
+inner_join(nonmutated_genes_tpm,mutated_genes_tpm,by="Gene.Name")
+
+```
+
+# TPM distribution of top 1000 non-mutated genes
+```{r,fig.width=3}
+nonmutated_genes_tpm<-read.table(file.path(dir, "formatted_data_nov.29/top_1000_expressed_nonmutated_genes_VAF_Depth_Filtered_by_Transcript_TPM.tsv"),header=TRUE)
+ggplot(nonmutated_genes_tpm)+
+  geom_line(aes(y=TPM,x=rownames(nonmutated_genes_tpm)))
+
+nonmutated_genes_tpm$Rank<-as.integer(rownames(nonmutated_genes_tpm))
+
+ggplot(nonmutated_genes_tpm, aes(x=Rank, y=TPM)) +
+  geom_line()+
+  scale_y_log10()+
+  ggtitle("TPM distribution of top 1000 non-mutated genes")
+```
+
+
+
+# 3. Can you make a table of the top-most highly expressed genes, ranked based on expression level, and then also annotate (1) which ones also come up in Neil's pipeline and their rank in that pipeline, and (2) which ones are in the known neoantigens list. We would want to include all the expressed genes necessary to include all the pipeline hits and known neoantigens (so whatever N you identify in step 2 would be the size of the list here). 
+
+```{r}
+top_mutated_genes_gene_exp<-filtered_pipeline_output%>%
+  dplyr::select(Gene.Name)%>%
+  cbind(row.names(filtered_pipeline_output))%>%
+  rename("row.names(filtered_pipeline_output)"="Filtered.Rank")%>%
+  right_join(top_mutated_genes_gene_exp,by="Gene.Name")
+
+top_mutated_genes_gene_exp<-top_mutated_genes_gene_exp%>%
+  mutate(Known.Neoantigen=case_when(Gene.Name%in%known_neoantigens$Gene~"Yes",
+                                    !(Gene.Name%in%known_neoantigens$Gene)~"No"),
+         .after = Filtered.Rank)%>%
+  arrange(desc(Gene.Expression))
+
+#write.table(top_mutated_genes_gene_exp,file.path(dir,"formatted_data_nov.29/Lucas_MC38_top_1342_mutated_neoantigens_using_mutated_transcript_Gene_Exp_VAF_Depth_Filtered.tsv"),sep="\t",row.names=FALSE)
+
+top_mutated_genes_transcript_exp<-filtered_pipeline_output%>%
+  dplyr::select(Gene.Name)%>%
+  cbind(row.names(filtered_pipeline_output))%>%
+  rename("row.names(filtered_pipeline_output)"="Filtered.Rank")%>%
+  right_join(top_mutated_genes_transcript_exp,by="Gene.Name")
+
+top_mutated_genes_transcript_exp<-top_mutated_genes_transcript_exp%>%
+  mutate(Known.Neoantigen=case_when(Gene.Name%in%known_neoantigens$Gene~"Yes",
+                                    !(Gene.Name%in%known_neoantigens$Gene)~"No"),
+         .after = Filtered.Rank)%>%
+  arrange(desc(Transcript.Expression))
+
+#write.table(top_mutated_genes_transcript_exp,file.path(dir,"formatted_data_nov.29/Lucas_MC38_top_1316_mutated_neoantigens_using_Transcript_Exp_VAF_Depth_Filtered.tsv"),sep="\t",row.names=FALSE)
+
+venn_diagram_list=list(Gene_Exp=top_mutated_genes_gene_exp$Gene.Name,
+                  Transcript_Exp=top_mutated_genes_transcript_exp$Gene.Name)
+
+ggvenn(venn_diagram_list)
+
+```
+
+
+
+# Where do I find Neil's hits and the known neoantigens in my mutated genes, ranked by transcript expression?
+```{r}
+top_mutated_genes_transcript_exp$Filtered.Rank<-as.integer(top_mutated_genes_transcript_exp$Filtered.Rank)
+
+predicted.for_plot<-top_mutated_genes_transcript_exp%>%
+  mutate(row=rownames(top_mutated_genes_transcript_exp))%>%
+  filter(Filtered.Rank<370)%>%
+  dplyr::select(row,Filtered.Rank)
+
+predicted.for_plot$sample<-"Predicted Neoantigens"
+predicted.for_plot$y<-1
+
+known.for_plot<-top_mutated_genes_gene_exp%>%
+  mutate(row=rownames(top_mutated_genes_gene_exp))%>%
+  filter(Known.Neoantigen=="Yes")%>%
+  dplyr::select(row,Gene.Name)
+
+known.for_plot$sample<-"Known Neoantigens"
+known.for_plot$y<-0
+
+for_plot<-bind_rows(predicted.for_plot,known.for_plot)
+for_plot$row<-as.integer(for_plot$row)
+
+ggplot(for_plot,aes(x=row,y=y,color=sample))+
+  geom_jitter(size=1,width=0)+
+  ylim(-1,2)+
+  ggtitle("Where do the predicted and known neoantigens fall in our expression ranked data?")+
+  geom_text_repel(label = for_plot$Gene.Name,
+                  color="black",
+                  min.segment.length=5,
+                  na.rm=TRUE)
+
+```
+
+
+
+# Where do I find the top 20 neoantigens (according to Neil's filtered pipeline) in the neoantigens ranked by expression?
+```{r}
+top_mutated_genes_gene_exp$Filtered.Rank<-as.integer(top_mutated_genes_gene_exp$Filtered.Rank)
+top_mutated_genes_transcript_exp$Filtered.Rank<-as.integer(top_mutated_genes_transcript_exp$Filtered.Rank)
+
+
+# top_mutated_genes_gene_exp[!is.na(top_mutated_genes_gene_exp$Filtered.Rank),"Filtered.Rank"]
+gene_exp.for_plot<-top_mutated_genes_gene_exp%>%
+  mutate(row=rownames(top_mutated_genes_gene_exp))%>%
+  filter(Filtered.Rank<=20)%>%
+  dplyr::select(row,Filtered.Rank)
+
+gene_exp.for_plot$sample<-"gene_exp"
+gene_exp.for_plot$y<-1
+
+# top_mutated_genes_transcript_exp[!is.na(top_mutated_genes_transcript_exp$Filtered.Rank),"Filtered.Rank"]
+transcript_exp.for_plot<-top_mutated_genes_transcript_exp%>%
+  mutate(row=rownames(top_mutated_genes_transcript_exp))%>%
+  filter(Filtered.Rank<=20)%>%
+  dplyr::select(row,Filtered.Rank)
+
+transcript_exp.for_plot$sample<-"transcript_exp"
+transcript_exp.for_plot$y<-0
+
+for_plot<-rbind(gene_exp.for_plot,transcript_exp.for_plot)
+for_plot$row<-as.integer(for_plot$row)
+
+ggplot(for_plot,aes(x=row,y=y,color=sample))+
+  geom_jitter(size=3,width=0)+
+  ylim(-1,2)+
+  ggtitle("Where do the top 20 predicted neoantigens fall in gene exp vs. transcript exp?")+
+  xlab("Row number")+
+  geom_text_repel(label = for_plot$Filtered.Rank,
+                  color="black",
+                  min.segment.length=1)
+
+```
+
+# Where do I find the known neoantigens in neoantigens ranked by expression?
+```{r}
+top_mutated_genes_gene_exp$Filtered.Rank<-as.integer(top_mutated_genes_gene_exp$Filtered.Rank)
+top_mutated_genes_transcript_exp$Filtered.Rank<-as.integer(top_mutated_genes_transcript_exp$Filtered.Rank)
+
+known_gene_exp.for_plot<-top_mutated_genes_gene_exp%>%
+  mutate(row=rownames(top_mutated_genes_gene_exp))%>%
+  filter(Known.Neoantigen=="Yes")%>%
+  dplyr::select(row,Gene.Name)
+
+known_gene_exp.for_plot$sample<-"gene_exp"
+known_gene_exp.for_plot$y<-1
+
+
+known_transcript_exp.for_plot<-top_mutated_genes_transcript_exp%>%
+  mutate(row=rownames(top_mutated_genes_transcript_exp))%>%
+  filter(Known.Neoantigen=="Yes")%>%
+  dplyr::select(row,Gene.Name)
+
+known_transcript_exp.for_plot$sample<-"transcript_exp"
+known_transcript_exp.for_plot$y<-0
+
+known_for_plot<-rbind(known_gene_exp.for_plot,known_transcript_exp.for_plot)
+known_for_plot$row<-as.integer(known_for_plot$row)
+
+ggplot(known_for_plot,aes(x=row,y=y,color=sample))+
+  geom_jitter(size=3,width=0)+
+  ylim(-1,2)+
+  ggtitle("Where do the known neoantigens fall in gene exp vs. transcript exp?")+
+  xlab("Row number")+
+  geom_text_repel(label = known_for_plot$Gene.Name,
+                  color="black",
+                  min.segment.length=4)
+```
+
+# Whats the overlap between Neil's (filtered) pipeline and known neoantigens?
+```{r}
+filtered_data<-filtered_pipeline_output%>%
+  cbind(row.names(filtered_pipeline_output),.)%>%
+  rename("row.names(filtered_pipeline_output)"="Filtered.Rank")%>%
+  mutate(Known.Neoantigen=case_when(Gene.Name%in%known_neoantigens$Gene~"Yes",
+                                    !(Gene.Name%in%known_neoantigens$Gene)~"No"),
+         .after = Filtered.Rank)
+
+filtered_data$Filtered.Rank<-as.integer(filtered_data$Filtered.Rank)
+
+filtered.for_plot<-filtered_data%>%
+  filter(Known.Neoantigen=="Yes")%>%
+  dplyr::select(Filtered.Rank,Gene.Name)
+
+filtered.for_plot$y<-0
+
+
+ggplot(filtered.for_plot,aes(x=Filtered.Rank,y=y))+
+  geom_jitter(size=3,width=0)+
+  ylim(-1,1)+
+  ggtitle("Where do the known neoantigens fall in binding affinity ranked data?")+
+  xlab("Row number")+
+  geom_text_repel(label = filtered.for_plot$Gene.Name,
+                  color="black",
+                  min.segment.length=4)
+```
+
+```{r}
+non_ATG_beginning_genes<-c("ENSMUST00000146511","ENSMUST00000006209","ENSMUST00000131070","ENSMUST00000096109","ENSMUST00000222156","ENSMUST00000122865","ENSMUST00000167115","ENSMUST00000155230","ENSMUST00000106553","ENSMUST00000153655","ENSMUST00000161064","ENSMUST00000133861","ENSMUST00000151346","ENSMUST00000227381","ENSMUST00000159806","ENSMUST00000160758","ENSMUST00000138950","ENSMUST00000224480","ENSMUST00000085280")
+
+failed_genes<-c("ENSMUST00000006209","ENSMUST00000131070","ENSMUST00000122865","ENSMUST00000167115",
+                "ENSMUST00000227381","ENSMUST00000159806")
+
+test<-filtered_pipeline_output%>%dplyr::select(Transcript,Gene.Name)
+colnames(test)<-c("Transcript","Gene")
+test_known<-inner_join(known_neoantigens,test,by="Gene")
+
+
+venn_diagram_list<-list(failed=failed_genes,
+                        predicted=filtered_pipeline_output$Transcript,
+                        known=test_known$Transcript)
+
+ggvenn(venn_diagram_list)
+
+filter(test_known,Transcript%in%non_ATG_beginning_genes)
+```
+
+
+# Why are we getting a poor overlap?
+# —> Neil’s pipeline is sorting based on ic50 binding affinity score- ie. NetMHC/NetMHCpan/PickPocket scores.
+# —> NetHMC and PickPocket score: Trained on 1. binding affinity data, 2. MS identified MHC restricted ligands (ligand protein sequence, HLA molecules, ligand length, MHC pocket residues)
+# Makes sense that sorting based on gene expression gives different results
+
+
+
+
+

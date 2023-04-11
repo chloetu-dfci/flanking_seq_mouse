@@ -1,0 +1,204 @@
+---
+title: "Formatting_and_selecting_top_genes"
+output: html_document
+date: "2022-12-12"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(dplyr)
+library(ggrepel)
+```
+
+
+# Chunk of code to add known neoantigens and Neil's hits to our output
+```{r,fig.height=1,fig.width=3}
+our_file<-read_excel(file.path(data_dir,"Flanking_Sequences_of_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+known_neoantigens<-read_excel(file.path(data_dir,"../2022-10-19 Known MC38 Neoantigens.xlsx"))
+known_neoantigens<-known_neoantigens[c(1:13),]
+neils_neoantigens<-read.csv(file.path(data_dir, "../Lucas_Pomerance_MC38_Epitope_Binding_Predictions_MHCI_H2_DB_H2_KB.filtered.tsv"), sep = "\t")
+
+# Check Neil's data. Do any genes with below 500 ic50 score have a DNA VAF of under 0.05?
+neils_neoantigens %>%
+  filter(Median.MT.Score <= 500, Tumor.DNA.VAF < 0.05)
+
+colnames(known_neoantigens)[1] <- "Gene.Name"
+known_neoantigens$Known.Neoantigen <- "Yes"
+known_neoantigens <- known_neoantigens[c(1,6)]
+
+
+neils_neoantigens<-neils_neoantigens %>%
+  mutate(Neoantigen.Prediction.Rank = rownames(neils_neoantigens)) %>%
+  dplyr::select(Neoantigen.Prediction.Rank,HGVSc,MT.Epitope.Seq)
+
+our_file<-our_file %>%
+  # Add known neoantigen column
+  left_join(known_neoantigens, by = c("Gene.Name")) %>%
+  # Add neil neoantigen column
+  left_join(neils_neoantigens, by = c("HGVSc", "MT.Epitope.Seq"))%>%
+  relocate(c(Known.Neoantigen,Neoantigen.Prediction.Rank), .after = Gene.Name) %>% 
+  mutate(Neoantigen.Prediction.Rank = as.numeric(Neoantigen.Prediction.Rank))
+
+missing_ranks<-c(1:387)[!(c(1:387) %in% our_file$Neoantigen.Prediction.Rank)]
+ggplot(as.data.frame(missing_ranks),
+       aes(x=missing_ranks,y=0,label=missing_ranks))+
+  geom_point(pt.size=1) + 
+  theme_classic() + 
+  geom_text_repel(min.segment.length=2)+
+  theme(axis.text.y=element_blank(), #remove x axis labels
+        axis.ticks.y=element_blank())+
+  ggtitle("Predicted neoantigens with 0.01 <= DNA VAF < 0.05")
+
+table(!(c(1:387) %in% our_file$Neoantigen.Prediction.Rank))
+
+table(is.na(our_file$Neoantigen.Prediction.Rank))
+
+
+write_xlsx(our_file,file.path(data_dir,"Flanking_Sequences_of_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+
+
+```
+
+# Chunk of code to add the 5' and 3' sequences
+```{r}
+our_file<-read_excel(file.path(data_dir,"Flanking_Sequences_of_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+
+nonmutated_genes<-read_excel(file.path(data_dir,"Top_1300_Nonmutated_Center_Sequences.xlsx"))
+
+
+five_prime_sequence <- "GCGAATTCGGTCTCGGGTCC"
+three_prime_sequence <- "GGTAGTGAGACCAAGCTTGCG"
+
+our_file <- our_file %>%
+  mutate(final_insertion_sequence = paste0(five_prime_sequence, MT_flanking_sequence,three_prime_sequence),.after=MT_flanking_sequence)
+
+nonmutated_genes <- nonmutated_genes %>%
+  mutate(final_insertion_sequence = paste0(five_prime_sequence, center_sequence,three_prime_sequence),.after=center_sequence)
+
+
+# write_xlsx(our_file, file.path(data_dir,"Flanking_Sequences_of_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+# write_xlsx(nonmutated_genes, file.path(data_dir,"Top_1300_Nonmutated_Center_Sequences.xlsx"))
+```
+
+
+
+
+# Set dir
+```{r}
+data_dir<-"~/Desktop/desktop/mouse_epitope_extraction/formatted_data_nov.29/"
+```
+
+# Open file
+```{r}
+mutated_genes<-read_excel(file.path(data_dir,"Flanking_Sequences_of_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+known_neoantigens<-read_excel(file.path(data_dir,"../2022-10-19 Known MC38 Neoantigens.xlsx"))
+known_neoantigens<-known_neoantigens[c(1:13),]
+nonmutated_genes<-read_excel(file.path(data_dir,"Top_1300_Nonmutated_Center_Sequences.xlsx"))
+```
+
+
+# Selecting known neoantigens from file
+```{r}
+known_genes<-mutated_genes%>%
+  # Keeps all 13 known neoantigens. Replicates of known neoantigens with different mutations have ic50 score of 3000+.
+  filter(Gene.Name%in%known_neoantigens$Gene,
+         Median.MT.Score<1500,
+         (flanking_sequence_length!=-1))
+
+```
+
+
+# Select mutations at least 15 codons from the mutation to the end/beginning of the exonic region so that the entire epitope is included.
+# Select mutations that have ic50 score of 500nm or better
+```{r}
+filtered_mutated_genes<-mutated_genes%>%
+  #flanking codons filter
+  filter((sequence_codon_end_index-16)>mutation_codon_index&
+           mutation_codon_index>(sequence_codon_start_index+15)|
+           (sequence_codon_end_index==0&sequence_codon_start_index==0))%>%
+  #ic50 score filter
+  filter(Median.MT.Score<=500)%>%
+  #remove known neoantigens
+  filter(!(Gene.Name%in%known_neoantigens$Gene))%>%
+  arrange(desc(Transcript.Expression))
+```
+
+
+```{r,fig.height=1.5}
+ggplot(filtered_mutated_genes)+
+  geom_line(aes(x=as.numeric(rownames(filtered_mutated_genes)),y=Transcript.Expression))+
+  theme_bw()+
+  xlab("Rank")+
+  ylab("Transcript Expression")+
+  ylim(c(0,100))+
+  #scale_y_log10()+
+  ggtitle("Expression of the top 283 mutated genes")
+
+ggplot(filtered_mutated_genes)+
+  geom_point(aes(x=as.numeric(rownames(filtered_mutated_genes)),y=Median.MT.Score))+
+  theme_bw()+
+  xlab("Rank")+
+  ylab("Median ic50 score")+
+  #scale_y_log10()+
+  ggtitle("ic50 score of the top 283 mutated genes")
+```
+
+```{r}
+top_50_mutated_genes<-filtered_mutated_genes%>%
+  dplyr::slice(1:38)%>%
+  rbind(known_genes)%>%
+  arrange(desc(Transcript.Expression))
+
+top_50_mutated_genes$second_mutation <- NA
+
+#write_xlsx(top_50_mutated_genes,file.path(data_dir,"Flanking_Sequences_of_Selected_50_Mutated_Genes_Full_VAF_Depth_Filtered_Multiple_Mutations_Allowed.xlsx"))
+```
+
+```{r}
+duplicated_instances<-top_50_mutated_genes%>%
+  filter(Gene.Name%in%c("Jak1","Yipf4"))
+```
+
+```{r,fig.height=1.5}
+ggplot(top_50_mutated_genes)+
+  geom_line(aes(x=as.numeric(rownames(top_50_mutated_genes)),y=Transcript.Expression))+
+  theme_bw()+
+  xlab("Rank")+
+  ylab("Transcript Expression (log 10 scaled)")+
+  scale_y_log10()+
+  ggtitle("Expression of the top 50 mutated genes")
+```
+
+```{r}
+nonmutated_genes<-nonmutated_genes%>%
+  filter(CDS_begins_with_ATG_or_CTG==TRUE&center_sequence_length==201&BsaI_seq_count==0)%>%
+  arrange()
+
+
+top_1000_nonmutated_genes<-nonmutated_genes%>%
+  mutate(length_check=(CDS_length_in_codons/2))%>%
+  mutate(length_bool=case_when(trunc(length_check)==middle_codon_index~TRUE,
+                               trunc(length_check)!=middle_codon_index~FALSE))%>%
+  arrange(desc(TPM))%>%
+  dplyr::slice(1:1000)
+
+top_1000_nonmutated_genes<-top_1000_nonmutated_genes[,-c(12,13)]
+write_xlsx(top_1000_nonmutated_genes,file.path(data_dir,"Center_Sequences_of_Selected_Top_1000_Nonmutated.xlsx"))
+
+
+```
+
+
+```{r,fig.height=2}
+ggplot(nonmutated_genes)+
+  geom_line(aes(x=as.numeric(rownames(nonmutated_genes)),y=TPM))+
+  theme_bw()+
+  xlab("Rank")+
+  ylab("Transcript Expression (log 10 scaled)")+
+  scale_y_log10()+
+  ggtitle("Expression of the top 1000 mutated genes")
+
+```
+
